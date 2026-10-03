@@ -1,3 +1,4 @@
+import math
 from typing import List, Dict, Any
 
 MPG = 10.0
@@ -39,7 +40,6 @@ def plan_optimal_fuel_stops(
     curr_pos = 0.0
     curr_fuel = initial_fuel_gallons
     fuel_stops = []
-    total_cost = 0.0
     curr_idx = -1
     max_steps = 100
     step = 0
@@ -57,8 +57,9 @@ def plan_optimal_fuel_stops(
             if not reachable_from_start:
                 raise ValueError("No fuel station is reachable with the initial fuel from the start location.")
             
-            # Select cheapest station among those that make reasonable highway progress (>= 200 mi or max available)
-            progress_stations = [x for x in reachable_from_start if x[1]["dist_along_route"] >= 200.0] or reachable_from_start
+            # Select cheapest station making substantial progress on the initial tank
+            min_dist = max(20.0, min(200.0, curr_reach * 0.6))
+            progress_stations = [x for x in reachable_from_start if x[1]["dist_along_route"] >= min_dist] or reachable_from_start
             best_i, best_s = min(progress_stations, key=lambda x: x[1]["price"])
             dist = best_s["dist_along_route"] - curr_pos
             curr_fuel -= dist / MPG
@@ -99,8 +100,8 @@ def plan_optimal_fuel_stops(
             fuel_needed = dist_to_dest / MPG
             buy = max(0.0, fuel_needed - curr_fuel)
             if buy > 0:
-                cost = buy * curr_price
-                total_cost += cost
+                buy_qty = round(math.ceil(buy * 100.0) / 100.0, 2)
+                cost = round(buy_qty * curr_price, 2)
                 fuel_stops.append({
                     "stop_number": len(fuel_stops) + 1,
                     "opis_id": stations[curr_idx]["opis_id"],
@@ -109,8 +110,8 @@ def plan_optimal_fuel_stops(
                     "city": stations[curr_idx]["city"],
                     "state": stations[curr_idx]["state"],
                     "price_per_gallon": round(curr_price, 3),
-                    "gallons_pumped": round(buy, 2),
-                    "cost": round(cost, 2),
+                    "gallons_pumped": buy_qty,
+                    "cost": cost,
                     "distance_from_start_miles": round(curr_pos, 1),
                     "distance_to_next_stop_or_dest_miles": round(dist_to_dest, 1),
                     "lat": stations[curr_idx]["lat"],
@@ -130,8 +131,8 @@ def plan_optimal_fuel_stops(
             fuel_needed = dist_needed / MPG
             buy = max(0.0, fuel_needed - curr_fuel)
             if buy > 0:
-                cost = buy * curr_price
-                total_cost += cost
+                buy_qty = round(math.ceil(buy * 100.0) / 100.0, 2)
+                cost = round(buy_qty * curr_price, 2)
                 fuel_stops.append({
                     "stop_number": len(fuel_stops) + 1,
                     "opis_id": stations[curr_idx]["opis_id"],
@@ -140,27 +141,32 @@ def plan_optimal_fuel_stops(
                     "city": stations[curr_idx]["city"],
                     "state": stations[curr_idx]["state"],
                     "price_per_gallon": round(curr_price, 3),
-                    "gallons_pumped": round(buy, 2),
-                    "cost": round(cost, 2),
+                    "gallons_pumped": buy_qty,
+                    "cost": cost,
                     "distance_from_start_miles": round(curr_pos, 1),
                     "distance_to_next_stop_or_dest_miles": round(dist_needed, 1),
                     "lat": stations[curr_idx]["lat"],
                     "lng": stations[curr_idx]["lng"]
                 })
-                curr_fuel += buy
+                curr_fuel += buy_qty
 
             curr_fuel -= fuel_needed
             curr_pos = target_s["dist_along_route"]
             curr_idx = target_i
 
-        # Case C: Current station is the cheapest in the 500-mile horizon -> fill up
+        # Case C: Current station is the cheapest in the 500-mile horizon -> fill up and maximize reach
         else:
             buy = TANK_CAPACITY_GALLONS - curr_fuel
-            cost = buy * curr_price
-            total_cost += cost
+            buy_qty = round(math.ceil(buy * 100.0) / 100.0, 2)
+            buy_qty = min(buy_qty, round(TANK_CAPACITY_GALLONS - curr_fuel, 2))
+            cost = round(buy_qty * curr_price, 2)
             
-            # Select the cheapest station in the reachable horizon (preferring distance >= 180 mi)
-            reachables = [x for x in horizon_stations if x[1]["dist_along_route"] - curr_pos >= 180.0] or horizon_stations
+            # Stretch this cheap fuel as far as possible: prefer stations 350-480 miles out
+            reachables = (
+                [x for x in horizon_stations if x[1]["dist_along_route"] - curr_pos >= 350.0] or
+                [x for x in horizon_stations if x[1]["dist_along_route"] - curr_pos >= 250.0] or
+                horizon_stations
+            )
             target_i, target_s = min(reachables, key=lambda x: x[1]["price"])
             dist_needed = target_s["dist_along_route"] - curr_pos
             
@@ -172,24 +178,23 @@ def plan_optimal_fuel_stops(
                 "city": stations[curr_idx]["city"],
                 "state": stations[curr_idx]["state"],
                 "price_per_gallon": round(curr_price, 3),
-                "gallons_pumped": round(buy, 2),
-                "cost": round(cost, 2),
+                "gallons_pumped": buy_qty,
+                "cost": cost,
                 "distance_from_start_miles": round(curr_pos, 1),
                 "distance_to_next_stop_or_dest_miles": round(dist_needed, 1),
                 "lat": stations[curr_idx]["lat"],
                 "lng": stations[curr_idx]["lng"]
             })
             curr_fuel = TANK_CAPACITY_GALLONS
-            
-            fuel_needed = dist_needed / MPG
-            curr_fuel -= fuel_needed
+            curr_fuel -= dist_needed / MPG
             curr_pos = target_s["dist_along_route"]
             curr_idx = target_i
 
+    tot_cost = round(sum(s["cost"] for s in fuel_stops), 2)
     return {
         "total_distance_miles": round(total_distance_miles, 1),
         "total_gallons_consumed": round(total_gallons_consumed, 2),
-        "total_fuel_cost": round(total_cost, 2),
+        "total_fuel_cost": tot_cost,
         "fuel_stops_count": len(fuel_stops),
         "fuel_stops": fuel_stops
     }

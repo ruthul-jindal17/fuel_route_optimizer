@@ -105,10 +105,16 @@ _OFFLINE_CITY_INDEX: Optional[Dict[str, Tuple[float, float]]] = None
 
 def _normalize_location_key(text: str) -> str:
     cleaned = text.strip().lower()
+    cleaned = re.sub(r"\bd\.?c\.?\b", "dc", cleaned)
     for full_state, abbr in _SORTED_STATE_NAMES:
-        pattern = r"\b" + re.escape(full_state) + r"\b"
+        # Match state name as the trailing state specification (e.g., ", Virginia" or " Virginia")
+        pattern = r"(?:,\s*|\s+)" + re.escape(full_state) + r"\s*$"
         if re.search(pattern, cleaned):
-            cleaned = re.sub(pattern, abbr, cleaned)
+            cleaned = re.sub(pattern, " " + abbr, cleaned)
+            break
+        # Match when the entire query is the state name
+        if cleaned == full_state:
+            cleaned = abbr
             break
     return re.sub(r"[^a-z0-9]", "", cleaned)
 
@@ -132,10 +138,11 @@ def get_offline_city_index() -> Dict[str, Tuple[float, float]]:
                 pop = c.get("population", 0)
 
                 # e.g. "bozeman, mt" -> "bozemanmt"
-                k1 = _normalize_location_key(f"{name}{st}")
-                if k1 not in pop_tracker or pop > pop_tracker[k1]:
-                    index[k1] = (lat, lng)
-                    pop_tracker[k1] = pop
+                for key_format in [f"{name} {st}", f"{name}{st}"]:
+                    k1 = _normalize_location_key(key_format)
+                    if k1 not in pop_tracker or pop > pop_tracker[k1]:
+                        index[k1] = (lat, lng)
+                        pop_tracker[k1] = pop
 
                 # e.g. "bozeman"
                 k2 = _normalize_location_key(name)

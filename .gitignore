@@ -2,4 +2,4 @@ venv/
 __pycache__/
 *.pyc
 db.sqlite3
-geocoded_fuel_stations.json
+.agents/

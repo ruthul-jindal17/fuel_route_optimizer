@@ -109,10 +109,14 @@ def get_candidate_stations_along_route(
     cum_dists = compute_cumulative_distances(coords)
     coords_arr = np.array([[c[1], c[0]] for c in coords]) # [lat, lng]
 
-    # Sample points along route to query station index
-    sample_step = max(1, len(coords) // 250)
-    sample_coords = coords_arr[::sample_step]
+    # Sample points along route every 5 miles to ensure comprehensive spatial coverage without blind spots
+    step_dist_miles = 5.0
+    sample_dists = np.arange(0.0, cum_dists[-1], step_dist_miles)
+    sample_indices = np.searchsorted(cum_dists, sample_dists)
+    if len(sample_indices) == 0 or sample_indices[-1] != len(coords_arr) - 1:
+        sample_indices = np.append(sample_indices, len(coords_arr) - 1)
     
+    sample_coords = coords_arr[sample_indices]
     s_lat_r = np.radians(sample_coords[:, 0])
     s_lng_r = np.radians(sample_coords[:, 1])
     s_xs = np.cos(s_lat_r) * np.cos(s_lng_r)
@@ -120,7 +124,8 @@ def get_candidate_stations_along_route(
     s_zs = np.sin(s_lat_r)
     sample_xyz = np.column_stack([s_xs, s_ys, s_zs])
 
-    chord_dist = 2.0 * math.sin(buffer_miles / (2.0 * EARTH_RADIUS_MILES))
+    effective_radius_miles = buffer_miles + (step_dist_miles / 2.0)
+    chord_dist = 2.0 * math.sin(effective_radius_miles / (2.0 * EARTH_RADIUS_MILES))
 
     # Vectorized ball point query across all sample points at once
     nested_indices = spatial_index.kdtree.query_ball_point(sample_xyz, r=chord_dist)
@@ -152,8 +157,8 @@ def get_candidate_stations_along_route(
         best_off_dist = haversine_miles(lat, lng, coords_arr[nearest_idx, 0], coords_arr[nearest_idx, 1])
 
         # Evaluate adjacent route segments around the nearest point
-        seg_start = max(0, nearest_idx - 2)
-        seg_end = min(num_coords - 1, nearest_idx + 2)
+        seg_start = max(0, nearest_idx - 3)
+        seg_end = min(num_coords - 1, nearest_idx + 3)
 
         station_vec = np.array([lat, lng])
         for seg_i in range(seg_start, seg_end):
@@ -178,10 +183,10 @@ def get_candidate_stations_along_route(
 
     candidates.sort(key=lambda s: s["dist_along_route"])
 
-    # Deduplicate stations within 5-mile highway bins, keeping the cheapest per bin without sliding-window collapse
+    # Deduplicate stations within 1.0-mile highway bins (same interchange), preserving distinct exits and reachability
     clusters: Dict[int, Dict[str, Any]] = {}
     for s in candidates:
-        bin_idx = int(s["dist_along_route"] // 5.0)
+        bin_idx = int(s["dist_along_route"] // 1.0)
         if bin_idx not in clusters or s["price"] < clusters[bin_idx]["price"]:
             clusters[bin_idx] = s
 

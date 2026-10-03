@@ -524,21 +524,23 @@
                 stopMarkers[stop.stop_number] = marker;
             });
 
-            map.fitBounds(routeLayer.getBounds(), { padding: [50, 50] });
+            if (routeLayer && routeLayer.getBounds && routeLayer.getBounds().isValid()) {
+                map.fitBounds(routeLayer.getBounds(), { padding: [50, 50], maxZoom: 15 });
+            }
         }
 
         function zoomToStop(stopNumber, lat, lng) {
-            map.flyTo([lat, lng], 13);
+            map.flyTo([lat, lng], 13, { duration: 0.8 });
             if (stopMarkers && stopMarkers[stopNumber]) {
-                setTimeout(() => {
+                map.once('moveend', () => {
                     stopMarkers[stopNumber].openPopup();
-                }, 350);
+                });
             }
         }
 
         function resetZoom() {
             if (routeLayer && routeLayer.getBounds && routeLayer.getBounds().isValid()) {
-                map.fitBounds(routeLayer.getBounds(), { padding: [50, 50] });
+                map.fitBounds(routeLayer.getBounds(), { padding: [50, 50], maxZoom: 15 });
             } else {
                 map.setView([39.8283, -98.5795], 4);
             }
