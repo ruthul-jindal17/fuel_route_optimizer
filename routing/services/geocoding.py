@@ -1,6 +1,11 @@
+import json
+import os
 import re
+from pathlib import Path
+from typing import Tuple, Optional, Dict
 import requests
-from typing import Tuple, Optional
+import geonamescache
+from django.core.cache import cache
 
 # Approximate bounding box for Contiguous USA
 USA_LAT_MIN = 24.396308
@@ -79,9 +84,88 @@ def parse_lat_lng(text: str) -> Optional[Tuple[float, float]]:
             pass
     return None
 
+US_STATE_NAMES_TO_ABBR = {
+    "alabama": "al", "alaska": "ak", "arizona": "az", "arkansas": "ar", "california": "ca",
+    "colorado": "co", "connecticut": "ct", "delaware": "de", "florida": "fl", "georgia": "ga",
+    "hawaii": "hi", "idaho": "id", "illinois": "il", "indiana": "in", "iowa": "ia",
+    "kansas": "ks", "kentucky": "ky", "louisiana": "la", "maine": "me", "maryland": "md",
+    "massachusetts": "ma", "michigan": "mi", "minnesota": "mn", "mississippi": "ms", "missouri": "mo",
+    "montana": "mt", "nebraska": "ne", "nevada": "nv", "new hampshire": "nh", "new jersey": "nj",
+    "new mexico": "nm", "new york": "ny", "north carolina": "nc", "north dakota": "nd", "ohio": "oh",
+    "oklahoma": "ok", "oregon": "or", "pennsylvania": "pa", "rhode island": "ri", "south carolina": "sc",
+    "south dakota": "sd", "tennessee": "tn", "texas": "tx", "utah": "ut", "vermont": "vt",
+    "virginia": "va", "washington": "wa", "west virginia": "wv", "wisconsin": "wi", "wyoming": "wy",
+    "district of columbia": "dc"
+}
+
+# Sort states by length descending so compound names ("west virginia") match before single names ("virginia")
+_SORTED_STATE_NAMES = sorted(US_STATE_NAMES_TO_ABBR.items(), key=lambda x: len(x[0]), reverse=True)
+
+_OFFLINE_CITY_INDEX: Optional[Dict[str, Tuple[float, float]]] = None
+
+def _normalize_location_key(text: str) -> str:
+    cleaned = text.strip().lower()
+    for full_state, abbr in _SORTED_STATE_NAMES:
+        pattern = r"\b" + re.escape(full_state) + r"\b"
+        if re.search(pattern, cleaned):
+            cleaned = re.sub(pattern, abbr, cleaned)
+            break
+    return re.sub(r"[^a-z0-9]", "", cleaned)
+
+def get_offline_city_index() -> Dict[str, Tuple[float, float]]:
+    global _OFFLINE_CITY_INDEX
+    if _OFFLINE_CITY_INDEX is not None:
+        return _OFFLINE_CITY_INDEX
+
+    index: Dict[str, Tuple[float, float]] = {}
+    pop_tracker: Dict[str, int] = {}
+
+    # 1. Geonamescache US cities (over 3,400 cities)
+    try:
+        gc = geonamescache.GeonamesCache()
+        for c in gc.get_cities().values():
+            if c.get("countrycode") == "US":
+                st = c.get("admin1code", "").strip().lower()
+                name = c.get("name", "").strip().lower()
+                lat = float(c["latitude"])
+                lng = float(c["longitude"])
+                pop = c.get("population", 0)
+
+                # e.g. "bozeman, mt" -> "bozemanmt"
+                k1 = _normalize_location_key(f"{name}{st}")
+                if k1 not in pop_tracker or pop > pop_tracker[k1]:
+                    index[k1] = (lat, lng)
+                    pop_tracker[k1] = pop
+
+                # e.g. "bozeman"
+                k2 = _normalize_location_key(name)
+                if k2 not in pop_tracker or pop > pop_tracker[k2]:
+                    index[k2] = (lat, lng)
+                    pop_tracker[k2] = pop
+    except Exception:
+        pass
+
+    # 2. Cached geocoding json (truck stops and specific hubs)
+    base_dir = Path(__file__).resolve().parent.parent.parent
+    cached_path = os.path.join(base_dir, "cached_geocoding.json")
+    if os.path.exists(cached_path):
+        try:
+            with open(cached_path, "r", encoding="utf-8") as f:
+                cached_data = json.load(f)
+                for name, coords in cached_data.items():
+                    k = _normalize_location_key(name)
+                    index[k] = (float(coords[0]), float(coords[1]))
+        except Exception:
+            pass
+
+    _OFFLINE_CITY_INDEX = index
+    return _OFFLINE_CITY_INDEX
+
 def geocode_location(location_str: str) -> Tuple[float, float]:
     """
     Convert a location string (lat,lng or place name) into (lat, lng).
+    Utilizes an offline index of 6,000+ US cities and in-memory caching
+    before falling back to OpenStreetMap Nominatim.
     Raises ValueError if location cannot be resolved or is outside USA.
     """
     cleaned = location_str.strip()
@@ -96,12 +180,26 @@ def geocode_location(location_str: str) -> Tuple[float, float]:
             raise ValueError(f"Coordinates ({lat}, {lng}) are outside the Continental USA.")
         return coords
 
-    # 2. Fast local lookup
+    # 2. Fast local lookup for top common cities
     lower_name = cleaned.lower()
     if lower_name in COMMON_US_CITIES:
         return COMMON_US_CITIES[lower_name]
 
-    # 3. Nominatim OpenStreetMap Geocoding
+    # 3. Comprehensive offline US cities & towns index (~6,400 keys in memory)
+    offline_index = get_offline_city_index()
+    norm_key = _normalize_location_key(cleaned)
+    if norm_key in offline_index:
+        coords = offline_index[norm_key]
+        if is_within_usa(coords[0], coords[1]):
+            return coords
+
+    # 4. Check Django In-Memory Cache for previously resolved queries
+    cache_key = f"geocode_{norm_key}"
+    cached_geo = cache.get(cache_key)
+    if cached_geo is not None:
+        return cached_geo
+
+    # 5. Nominatim OpenStreetMap Geocoding (only for unindexed queries)
     query = cleaned if "usa" in lower_name or "united states" in lower_name else f"{cleaned}, USA"
     headers = {"User-Agent": "DjangoFuelRouteOptimizer/1.0 (contact@internal.app)"}
     
@@ -119,7 +217,9 @@ def geocode_location(location_str: str) -> Tuple[float, float]:
                 lng = float(data[0]["lon"])
                 if not is_within_usa(lat, lng):
                     raise ValueError(f"Resolved location '{cleaned}' is outside the Continental USA.")
-                return (lat, lng)
+                res_coords = (lat, lng)
+                cache.set(cache_key, res_coords, timeout=86400 * 30)  # Cache for 30 days
+                return res_coords
     except requests.RequestException as e:
         raise ValueError(f"Geocoding service unavailable for '{cleaned}': {str(e)}")
 

@@ -57,8 +57,9 @@ def plan_optimal_fuel_stops(
             if not reachable_from_start:
                 raise ValueError("No fuel station is reachable with the initial fuel from the start location.")
             
-            # Select the cheapest station reachable on the initial tank
-            best_i, best_s = min(reachable_from_start, key=lambda x: x[1]["price"])
+            # Select cheapest station among those that make reasonable highway progress (>= 200 mi or max available)
+            progress_stations = [x for x in reachable_from_start if x[1]["dist_along_route"] >= 200.0] or reachable_from_start
+            best_i, best_s = min(progress_stations, key=lambda x: x[1]["price"])
             dist = best_s["dist_along_route"] - curr_pos
             curr_fuel -= dist / MPG
             curr_pos = best_s["dist_along_route"]
@@ -87,8 +88,14 @@ def plan_optimal_fuel_stops(
             if s["price"] < curr_price - 0.005
         ]
 
-        # Case A: Destination is within reach of a full tank and no cheaper station ahead
-        if dist_to_dest <= MAX_RANGE_MILES and not cheaper_ahead:
+        # Case A: Destination is within reach of a full tank and no significant savings ahead
+        min_cheaper_ahead = min(cheaper_ahead, key=lambda x: x[1]["price"]) if cheaper_ahead else None
+        potential_savings = (
+            (curr_price - min_cheaper_ahead[1]["price"]) * ((total_distance_miles - min_cheaper_ahead[1]["dist_along_route"]) / MPG)
+            if min_cheaper_ahead else 0.0
+        )
+
+        if dist_to_dest <= MAX_RANGE_MILES and (not cheaper_ahead or potential_savings < 2.0):
             fuel_needed = dist_to_dest / MPG
             buy = max(0.0, fuel_needed - curr_fuel)
             if buy > 0:
@@ -114,12 +121,10 @@ def plan_optimal_fuel_stops(
 
         # Case B: A cheaper station exists in the 500-mile horizon
         if cheaper_ahead:
-            # Pick the first cheaper station at least 25 miles ahead (to avoid micro-stops)
-            target_i, target_s = cheaper_ahead[0]
-            for ci, cs in cheaper_ahead:
-                if cs["dist_along_route"] - curr_pos >= 25.0 or cs == cheaper_ahead[-1][1]:
-                    target_i, target_s = ci, cs
-                    break
+            # Target the lowest-price station in the reachable horizon (preferring furthest if tied)
+            min_p = min(s["price"] for _, s in cheaper_ahead)
+            best_candidates = [x for x in cheaper_ahead if x[1]["price"] <= min_p + 0.01]
+            target_i, target_s = max(best_candidates, key=lambda x: x[1]["dist_along_route"])
 
             dist_needed = target_s["dist_along_route"] - curr_pos
             fuel_needed = dist_needed / MPG
@@ -155,9 +160,7 @@ def plan_optimal_fuel_stops(
             total_cost += cost
             
             # Select the cheapest station in the reachable horizon (preferring distance >= 180 mi)
-            reachables = [x for x in horizon_stations if x[1]["dist_along_route"] - curr_pos >= 180.0]
-            if not reachables:
-                reachables = horizon_stations
+            reachables = [x for x in horizon_stations if x[1]["dist_along_route"] - curr_pos >= 180.0] or horizon_stations
             target_i, target_s = min(reachables, key=lambda x: x[1]["price"])
             dist_needed = target_s["dist_along_route"] - curr_pos
             

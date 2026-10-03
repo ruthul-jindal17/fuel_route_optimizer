@@ -1,5 +1,6 @@
 import requests
 from typing import Dict, Any, Tuple
+from django.core.cache import cache
 
 OSRM_URL = "http://router.project-osrm.org/route/v1/driving/{lon1},{lat1};{lon2},{lat2}"
 
@@ -7,6 +8,7 @@ def get_driving_route(start_coords: Tuple[float, float], finish_coords: Tuple[fl
     """
     Fetch the driving route between start_coords (lat, lon) and finish_coords (lat, lon)
     using Open Source Routing Machine (OSRM) in a single API call.
+    Results are cached in-memory to prevent repeated network latency and external rate limits.
     
     Returns:
         dict containing:
@@ -18,6 +20,12 @@ def get_driving_route(start_coords: Tuple[float, float], finish_coords: Tuple[fl
     lat1, lon1 = start_coords
     lat2, lon2 = finish_coords
     
+    # Check in-memory route cache (~4 decimal places ≈ 11m precision)
+    cache_key = f"osrm_route_{round(lat1, 4)}_{round(lon1, 4)}_{round(lat2, 4)}_{round(lon2, 4)}"
+    cached_route = cache.get(cache_key)
+    if cached_route is not None:
+        return cached_route
+
     url = OSRM_URL.format(lon1=lon1, lat1=lat1, lon2=lon2, lat2=lat2)
     params = {
         "overview": "full",
@@ -41,7 +49,7 @@ def get_driving_route(start_coords: Tuple[float, float], finish_coords: Tuple[fl
         geometry = best_route["geometry"]
         coordinates = geometry["coordinates"] # list of [lng, lat]
         
-        return {
+        route_result = {
             "distance_meters": distance_meters,
             "distance_miles": distance_miles,
             "duration_seconds": duration_seconds,
@@ -49,5 +57,7 @@ def get_driving_route(start_coords: Tuple[float, float], finish_coords: Tuple[fl
             "geometry": geometry,
             "coordinates": coordinates
         }
+        cache.set(cache_key, route_result, timeout=86400)
+        return route_result
     except requests.RequestException as e:
         raise ValueError(f"Failed to connect to free routing service: {str(e)}")

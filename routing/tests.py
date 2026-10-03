@@ -36,6 +36,17 @@ class GeocodingTests(TestCase):
         with self.assertRaises(ValueError):
             geocode_location("51.5074, -0.1278") # London coords
 
+    def test_offline_geocoding_lookup(self):
+        # Bozeman, MT from geonamescache
+        lat, lng = geocode_location("Bozeman, MT")
+        self.assertAlmostEqual(lat, 45.6796, places=1)
+        self.assertAlmostEqual(lng, -111.0385, places=1)
+
+        # Breezewood, PA from cached_geocoding.json
+        bw_lat, bw_lng = geocode_location("Breezewood, PA")
+        self.assertAlmostEqual(bw_lat, 39.9990, places=1)
+        self.assertAlmostEqual(bw_lng, -78.2404, places=1)
+
 
 class OptimizerTests(TestCase):
     def test_short_trip_no_stops_needed(self):
@@ -121,6 +132,9 @@ class APIRoutingTests(TestCase):
         self.assertIn('fuel_stops', data)
         self.assertIn('route_geometry', data)
         self.assertIn('map_geojson', data)
+        self.assertIn('calculation_time_ms', data)
+        self.assertIn('performance_breakdown_ms', data)
+        self.assertGreater(data['calculation_time_ms'], 0.0)
         self.assertEqual(data['start_location']['input'], 'Chicago, IL')
         self.assertEqual(data['finish_location']['input'], 'Dallas, TX')
 
@@ -181,3 +195,11 @@ class APIRoutingTests(TestCase):
         response = self.client.get('/')
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'Fuel Route Optimizer')
+
+    def test_west_virginia_state_normalization(self):
+        from routing.services.geocoding import _normalize_location_key, geocode_location
+        self.assertEqual(_normalize_location_key('Charleston, West Virginia'), 'charlestonwv')
+        self.assertEqual(_normalize_location_key('Richmond, Virginia'), 'richmondva')
+        lat, lng = geocode_location('Charleston, West Virginia')
+        self.assertAlmostEqual(lat, 38.35, places=1)
+        self.assertAlmostEqual(lng, -81.63, places=1)

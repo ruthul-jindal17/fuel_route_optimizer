@@ -239,6 +239,26 @@
         .leaflet-popup-tip {
             background: #1e293b;
         }
+        .reset-zoom-btn {
+            background-color: #1e293b !important;
+            color: #f8fafc !important;
+            border: 1px solid #475569 !important;
+            padding: 8px 14px !important;
+            border-radius: 8px !important;
+            font-size: 0.85rem !important;
+            font-weight: 600 !important;
+            cursor: pointer !important;
+            display: flex !important;
+            align-items: center !important;
+            gap: 8px !important;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3) !important;
+            transition: all 0.2s ease !important;
+        }
+        .reset-zoom-btn:hover {
+            background-color: #334155 !important;
+            border-color: #38bdf8 !important;
+            color: #38bdf8 !important;
+        }
     </style>
 </head>
 <body>
@@ -287,18 +307,25 @@
     <!-- Leaflet JS -->
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
     <script>
-        // Initialize Map
-        const map = L.map('map').setView([39.8283, -98.5795], 4);
+        // Initialize Map with zoom constraints and boundaries to prevent repeating tiles
+        const map = L.map('map', {
+            minZoom: 3,
+            maxZoom: 18,
+            maxBounds: [[-85, -180], [85, 180]],
+            maxBoundsViscosity: 1.0
+        }).setView([39.8283, -98.5795], 4);
         
-        // CartoDB Dark Matter tiles
         // Esri World Street Map (100% free, reliable, no API key required)
         L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}', {
             attribution: 'Tiles &copy; Esri &mdash; Source: Esri, DeLorme, NAVTEQ, USGS, Intermap, iPC, NRCAN, Esri Japan, METI, Esri China (Hong Kong), Esri (Thailand), TomTom, 2012',
-            maxZoom: 19
+            maxZoom: 19,
+            noWrap: true,
+            bounds: [[-85, -180], [85, 180]]
         }).addTo(map);
 
         let routeLayer = null;
         let markersLayer = L.layerGroup().addTo(map);
+        let stopMarkers = {};
 
         function setRoute(start, finish) {
             document.getElementById('start-input').value = start;
@@ -327,6 +354,8 @@
             submitBtn.disabled = true;
             btnText.innerHTML = 'Calculating optimal route...';
 
+            const startTime = performance.now();
+
             try {
                 const response = await fetch('/api/route-fuel/', {
                     method: 'POST',
@@ -340,7 +369,8 @@
                     throw new Error(data.error || 'Failed to calculate route.');
                 }
 
-                renderResults(data);
+                const clientElapsed = Math.round(performance.now() - startTime);
+                renderResults(data, clientElapsed);
                 renderMap(data);
 
             } catch (err) {
@@ -353,10 +383,32 @@
             }
         }
 
-        function renderResults(data) {
+        function renderResults(data, clientElapsed) {
             const container = document.getElementById('results');
             
+            const serverMs = data.calculation_time_ms !== undefined ? `${data.calculation_time_ms} ms` : null;
+            const bd = data.performance_breakdown_ms;
+
             let html = `
+                <div style="background: rgba(15, 23, 42, 0.9); border: 1px solid #334155; border-radius: 8px; padding: 10px 14px; margin-bottom: 16px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <span style="font-size: 0.76rem; text-transform: uppercase; letter-spacing: 0.05em; color: #94a3b8; font-weight: 700; display: flex; align-items: center; gap: 6px;">
+                            <i class="fa-solid fa-bolt" style="color: #fbbf24;"></i> Calculation Speed
+                        </span>
+                        <span style="font-size: 0.95rem; font-weight: 700; color: #38bdf8;">
+                            ${serverMs || clientElapsed + ' ms'}
+                        </span>
+                    </div>
+                    ${bd ? `
+                    <div style="display: flex; gap: 8px; margin-top: 6px; font-size: 0.72rem; color: #94a3b8; flex-wrap: wrap; border-top: 1px solid #1e293b; padding-top: 6px;">
+                        <span>Geo: <strong style="color: #f1f5f9;">${bd.geocoding}ms</strong></span> &bull;
+                        <span>OSRM: <strong style="color: #f1f5f9;">${bd.routing}ms</strong></span> &bull;
+                        <span>Corridor: <strong style="color: #f1f5f9;">${bd.spatial_search}ms</strong></span> &bull;
+                        <span>Optimizer: <strong style="color: #f1f5f9;">${bd.optimization}ms</strong></span>
+                    </div>
+                    ` : ''}
+                </div>
+
                 <div class="summary-grid">
                     <div class="summary-card">
                         <div class="label">Distance</div>
@@ -384,10 +436,17 @@
                     </div>
                 `;
             } else {
-                html += `<h3 style="font-size: 0.95rem; margin-bottom: 12px; color: #cbd5e1;">Optimal Refueling Schedule</h3>`;
+                html += `
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                        <h3 style="font-size: 0.95rem; color: #cbd5e1; margin: 0;">Optimal Refueling Schedule</h3>
+                        <button class="quick-btn" onclick="resetZoom()" style="font-size: 0.75rem; padding: 4px 8px; margin: 0;" title="Reset map zoom to fit full route">
+                            <i class="fa-solid fa-compress"></i> Reset View
+                        </button>
+                    </div>
+                `;
                 data.fuel_stops.forEach(stop => {
                     html += `
-                        <div class="stop-item" onclick="zoomToStop(${stop.lat}, ${stop.lng})">
+                        <div class="stop-item" onclick="zoomToStop(${stop.stop_number}, ${stop.lat}, ${stop.lng})">
                             <span class="stop-badge">Stop #${stop.stop_number} &bull; Mile ${stop.distance_from_start_miles}</span>
                             <div class="stop-name">${stop.station_name}</div>
                             <div class="stop-loc">${stop.address}, ${stop.city}, ${stop.state}</div>
@@ -441,6 +500,7 @@
                 fillOpacity: 1
             }).bindPopup(`<strong>Finish:</strong> ${finish.input}`).addTo(markersLayer);
 
+            stopMarkers = {};
             // Fuel Stop markers
             data.fuel_stops.forEach(stop => {
                 const marker = L.circleMarker([stop.lat, stop.lng], {
@@ -461,14 +521,44 @@
                         Mile Marker: ${stop.distance_from_start_miles} mi
                     </div>
                 `).addTo(markersLayer);
+                stopMarkers[stop.stop_number] = marker;
             });
 
             map.fitBounds(routeLayer.getBounds(), { padding: [50, 50] });
         }
 
-        function zoomToStop(lat, lng) {
+        function zoomToStop(stopNumber, lat, lng) {
             map.flyTo([lat, lng], 13);
+            if (stopMarkers && stopMarkers[stopNumber]) {
+                setTimeout(() => {
+                    stopMarkers[stopNumber].openPopup();
+                }, 350);
+            }
         }
+
+        function resetZoom() {
+            if (routeLayer && routeLayer.getBounds && routeLayer.getBounds().isValid()) {
+                map.fitBounds(routeLayer.getBounds(), { padding: [50, 50] });
+            } else {
+                map.setView([39.8283, -98.5795], 4);
+            }
+        }
+
+        // Add floating Reset Zoom control button on top-right of map
+        const ResetZoomControl = L.Control.extend({
+            options: { position: 'topright' },
+            onAdd: function(map) {
+                const btn = L.DomUtil.create('button', 'reset-zoom-btn');
+                btn.innerHTML = '<i class="fa-solid fa-compress"></i> Reset View';
+                btn.title = 'Fit full route';
+                btn.onclick = function(e) {
+                    L.DomEvent.stopPropagation(e);
+                    resetZoom();
+                };
+                return btn;
+            }
+        });
+        map.addControl(new ResetZoomControl());
 
         // Run initial default route
         calculateRoute();

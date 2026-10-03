@@ -127,3 +127,15 @@ MAILERS = {
         'BACKEND': 'django.core.mail.backends.console.EmailBackend',
     },
 }
+
+# In-Memory Cache configuration for fast route and geocoding lookups
+CACHES = {
+    'default': {
+        'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+        'LOCATION': 'route-optimizer-cache',
+        'TIMEOUT': 86400,  # 24 hours
+        'OPTIONS': {
+            'MAX_ENTRIES': 2000
+        }
+    }
+}
